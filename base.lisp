@@ -2,16 +2,38 @@
 (in-readtable :fn.reader)
 
 (defparameter *minimum-frame-size* 5s0)
-(defparameter *default-clear-color* (v! 0.5 0.5 0.5 0))
+
+;;------------------------------------------------------------
+
+(defparameter *colors* '((V! 0.46 0.46 0.46 0)
+                         (V! 0.26 0.26 0.26 0)
+                         (V! 0.43 0.43 0.43 0)
+                         (V! 0.37 0.37 0.37 0)
+                         (V! 0.17 0.17 0.17 0)
+                         (V! 0.2 0.2 0.2 0)
+                         (V! 0.29 0.29 0.29 0)
+                         (V! 0.31 0.31 0.31 0)
+                         (V! 0.4 0.4 0.4 0)
+                         (V! 0.34 0.34 0.34 0)
+                         (V! 0.23 0.23 0.23 0)))
+
+(let ((i 0))
+  (defun get-col ()
+    (setf i (mod (1+ i) (length *colors*)))
+    (elt *colors* i)))
+
+;;------------------------------------------------------------
+
+(deftclass (buffer (:conc-name nil))
+  (clear-color (get-col))
+  (viewport (make-viewport))
+  (content nil :type (or null sampler)))
+
+;;------------------------------------------------------------
 
 (deftclass (frame (:conc-name nil))
   split-type
   (children (make-viewport)))
-
-(deftclass (buffer (:conc-name nil))
-  (clear-color *default-clear-color*)
-  (viewport (make-viewport))
-  (content nil :type (or null sampler)))
 
 (defun parent (frame)
   (unless (find frame *groups*)
@@ -23,12 +45,48 @@
       (or (when (find frame children) frame)
           (find-if #'identity children :key λ(%find-parent _))))))
 
-(defparameter *groups* (list (make-frame)))
-(defvar *current-group* 0)
 (defvar *current-frame* nil)
+
+
 
 (defun %set-current-frame (frame)
   (setf *current-frame* frame))
+
+;;------------------------------------------------------------
+
+(defparameter *group-count* 0)
+(defvar *current-group* :group-0)
+(defvar *last-group* nil)
+(defparameter *groups*
+  (let ((g (make-hash-table)))
+    (setf (gethash :group-0 g) (make-frame)
+          *current-group* :group-0
+          *group-count* 0)
+    g))
+
+(defun add-group (&optional switch-to-group)
+  (let ((name (intern (format nil "GROUP-~s" (incf *group-count*)))))
+    (setf (gethash name *groups*) (make-frame))
+    (when switch-to-group
+      (switch-to-group name))
+    name))
+
+(defun switch-to-group (id)
+  (assert (group-exists-p id))
+  (push *current-group* *last-group*)
+  (setf *current-group* id))
+
+(defun delete-group (id)
+  (assert (group-exists-p id))
+  (when *last-group*
+    (switch-to-group
+     (or (pop *last-group*) (first (hash-table-keys *groups*)))))
+  (when (= (hash-table-count *groups*) 0)
+    (add-group t))
+  nil)
+
+(defun group-exists-p (id)
+  (gethash id *groups*))
 
 ;;------------------------------------------------------------
 
