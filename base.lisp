@@ -24,16 +24,50 @@
 
 ;;------------------------------------------------------------
 
-(deftclass (buffer (:conc-name nil))
+(deftclass (buffer (:conc-name nil) (:constructor %make-buffer))
   (clear-color (get-col))
   (viewport (make-viewport))
-  (content nil :type (or null sampler)))
+  (content nil :type (or null sampler))
+  (frame nil :type (or null frame)))
+
+(defvar *buffers* (make-hash-table))
+(defvar *buffer-id* -1)
+
+(defun gen-null-buffer-name ()
+  (intern (format nil "NULL-BUFFER-~a" (incf *buffer-id*)) :keyword))
+
+(defun make-buffer (&optional name)
+  (assert (or (null name) (keywordp name)))
+  (let ((name (or name (gen-null-buffer-name))))
+    (assert (not (buffer-exists-p name)))
+    (setf (gethash name *buffers*) (%make-buffer))))
+
+(defun kill-buffer (name)
+  (assert (buffer-exists-p name))
+  (let ((buffer (gethash name *buffers*)))
+    (%switch-to-buffer (frame buffer) nil)
+    (setf (viewport buffer) nil
+          (content buffer) nil
+          (frame buffer) nil)
+    nil))
+
+(defun buffer-exists-p (name)
+  (assert (keywordp name))
+  (not (null (gethash name *buffers*))))
+
+(defun find-or-make-suitable-buffer ()
+  (block nil
+    (maphash (lambda (name buffer)
+               (when (not (frame buffer))
+                 (return name)))
+             *buffers*)
+    (make-buffer)))
 
 ;;------------------------------------------------------------
 
 (deftclass (frame (:conc-name nil))
   split-type
-  (children (make-viewport)))
+  (children (make-buffer)))
 
 (defun parent (frame)
   (unless (find frame *groups*)
@@ -47,46 +81,23 @@
 
 (defvar *current-frame* nil)
 
-
-
 (defun %set-current-frame (frame)
   (setf *current-frame* frame))
 
-;;------------------------------------------------------------
+(defun switch-to-buffer (buffer-name)
+  (assert (buffer-exists-p buffer-name))
+  (%switch-to-buffer *current-frame* buffer-name))
 
-(defparameter *group-count* 0)
-(defvar *current-group* :group-0)
-(defvar *last-group* nil)
-(defparameter *groups*
-  (let ((g (make-hash-table)))
-    (setf (gethash :group-0 g) (make-frame)
-          *current-group* :group-0
-          *group-count* 0)
-    g))
+(defun %switch-to-buffer (frame &optional buffer-name)
+  (with-slots (children) frame
+    (assert (not (listp children)))
+    (let* ((buffer-name (or buffer-name (find-or-make-suitable-buffer)))
+           (buffer (gethash *buffers* buffer-name)))
+      (assert buffer)
+      (setf children buffer))))
 
-(defun add-group (&optional switch-to-group)
-  (let ((name (intern (format nil "GROUP-~s" (incf *group-count*)))))
-    (setf (gethash name *groups*) (make-frame))
-    (when switch-to-group
-      (switch-to-group name))
-    name))
-
-(defun switch-to-group (id)
-  (assert (group-exists-p id))
-  (push *current-group* *last-group*)
-  (setf *current-group* id))
-
-(defun delete-group (id)
-  (assert (group-exists-p id))
-  (when *last-group*
-    (switch-to-group
-     (or (pop *last-group*) (first (hash-table-keys *groups*)))))
-  (when (= (hash-table-count *groups*) 0)
-    (add-group t))
-  nil)
-
-(defun group-exists-p (id)
-  (gethash id *groups*))
+(defun focus-buffer-left ()
+  )
 
 ;;------------------------------------------------------------
 
@@ -148,7 +159,7 @@
   (with-slots (children split-type) frame
     (assert (not (listp children)))
     (setf children (list (list children 0.5s0 0.5s0)
-                         (list (make-viewport) 0.5s0 0.5s0))
+                         (list (make-buffer) 0.5s0 0.5s0))
           split-type direction)
     (%set-current-frame (first children))))
 
@@ -226,5 +237,40 @@
              (to-h-dif (- to-h-dif (max proposed-to-h *minimum-frame-size*))))
         (list (list to-id to (+ to-w to-w-dif) (+ to-h to-h-dif))
               (list from-id from (- from-w to-w-dif) (+ from-h to-h-dif)))))))
+
+;;------------------------------------------------------------
+
+(defparameter *group-count* 0)
+(defvar *current-group* :group-0)
+(defvar *last-group* nil)
+(defparameter *groups*
+  (let ((g (make-hash-table)))
+    (setf *groups* g
+          *group-count* 0)
+    (add-group t)))
+
+(defun add-group (&optional switch-to-group)
+  (let ((name (intern (format nil "GROUP-~s" (incf *group-count*)))))
+    (setf (gethash name *groups*) (make-frame))
+    (when switch-to-group
+      (switch-to-group name))
+    name))
+
+(defun switch-to-group (id)
+  (assert (group-exists-p id))
+  (push *current-group* *last-group*)
+  (setf *current-group* id))
+
+(defun kill-group (id)
+  (assert (group-exists-p id))
+  (when *last-group*
+    (switch-to-group
+     (or (pop *last-group*) (first (hash-table-keys *groups*)))))
+  (when (= (hash-table-count *groups*) 0)
+    (add-group t))
+  nil)
+
+(defun group-exists-p (id)
+  (not (null (gethash id *groups*))))
 
 ;;------------------------------------------------------------
