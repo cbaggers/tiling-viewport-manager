@@ -99,6 +99,36 @@
       (setf (viewport-origin bordered-viewport)
             (v2:+ value (v! *frame-size-px* *frame-size-px*))))))
 
+(defun pick-buffer-left (&optional buffer)
+  (let* ((of (or buffer (%current-buffer)))
+         (origin (origin of)))
+    (or (pick-buffer (- (v:x origin) (* 4 *frame-size-px*))
+                    (+ (v:y origin) (* 4 *frame-size-px*)))
+        buffer)))
+
+(defun pick-buffer-right (&optional buffer)
+  (let* ((of (or buffer (%current-buffer)))
+         (origin (origin of))
+         (res (resolution of)))
+    (or (pick-buffer (- (v:x origin) (v:x res) (* 4 *frame-size-px*))
+                    (+ (v:y origin) (* 4 *frame-size-px*)))
+        buffer)))
+
+(defun pick-buffer-down (&optional buffer)
+  (let* ((of (or buffer (%current-buffer)))
+         (origin (origin of)))
+    (or (pick-buffer (+ (v:x origin) (* 4 *frame-size-px*))
+                    (- (v:y origin) (* 4 *frame-size-px*)))
+        buffer)))
+
+(defun pick-buffer-up (&optional buffer)
+  (let* ((of (or buffer (%current-buffer)))
+         (origin (origin of))
+         (res (resolution of)))
+    (or (pick-buffer (+ (v:x origin) (* 4 *frame-size-px*))
+                    (+ (v:y origin) (v:y res) (* 4 *frame-size-px*)))
+        buffer)))
+
 (defun switch-to-buffer (buffer-name)
   (assert (buffer-exists-p buffer-name))
   (%switch-to-buffer (%current-frame) buffer-name))
@@ -172,16 +202,17 @@
 
 ;;------------------------------------------------------------
 
-(defun pick-frame (x-pix y-pix &optional (group-id *current-group*))
+
+(defun pick-buffer (x-pix y-pix &optional (group-id *current-group*))
   (destructuring-bind (x y)
       (cepl.internals:window-size cepl.internals:*gl-window*)
     (let* ((n-x (/ x-pix x))
            (n-y (/ y-pix y)))
-      (pick-frame-normalize-coords n-x n-y group-id))))
+      (children (pick-frame-normalize-coords n-x n-y group-id)))))
 
-(defun pick-frame-normalize-coords (x y &optional (group-id *current-group*))
+(defun pick-buffer-normalize-coords (x y &optional (group-id *current-group*))
   (let ((frame (gethash group-id *groups*)))
-    (%pick-frame frame x y)))
+    (children (%pick-frame frame x y))))
 
 (defun %pick-frame (frame x y)
   (let ((rx x)
@@ -191,7 +222,7 @@
           (loop :for (c %x %y) :in children
              :if (and (<= rx %x) (<= ry %y))
              :return (cond
-                       ((not (typep x 'frame)) c)
+                       ((not (typep c 'frame)) c)
                        ((eq split-type :horizontal) (%pick-frame c (/ rx %x) y))
                        (t (%pick-frame c x (/ ry %y))))
              :else :do (if (eq split-type :horizontal)
