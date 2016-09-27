@@ -3,6 +3,9 @@
 
 (defparameter *minimum-frame-size* 5s0)
 (defparameter *frame-size-px* 5s0)
+(defparameter *last-highlight-time* 0s0)
+(defparameter *highlight-duration-ms* 64s0)
+(defparameter *highlight-color* (v! 1 0 0 0))
 
 ;;------------------------------------------------------------
 
@@ -29,6 +32,7 @@
   (name (error "A buffer needs a name"))
   (clear-color (get-col))
   (viewport (make-viewport))
+  (bordered-viewport (make-viewport))
   (content nil :type (or null sampler))
   (frame nil :type (or null frame)))
 
@@ -77,9 +81,11 @@
       (viewport-resolution viewport))))
 
 (defmethod (setf resolution) (value (buffer buffer))
-  (with-slots (viewport) buffer
+  (with-slots (viewport bordered-viewport) buffer
     (when viewport
-      (setf (viewport-resolution viewport) value))))
+      (setf (viewport-resolution viewport) value)
+      (setf (viewport-resolution bordered-viewport)
+            (v2:- value (v! *frame-size-px* *frame-size-px* ))))))
 
 (defmethod origin ((buffer buffer))
   (with-slots (viewport) buffer
@@ -87,9 +93,11 @@
       (viewport-origin viewport))))
 
 (defmethod (setf origin) (value (buffer buffer))
-  (with-slots (viewport) buffer
+  (with-slots (viewport bordered-viewport) buffer
     (when viewport
-      (setf (viewport-origin viewport) value))))
+      (setf (viewport-origin viewport) value)
+      (setf (viewport-origin bordered-viewport)
+            (v2:+ value (v! *frame-size-px* *frame-size-px*))))))
 
 (defun switch-to-buffer (buffer-name)
   (assert (buffer-exists-p buffer-name))
@@ -194,7 +202,9 @@
 
 ;;------------------------------------------------------------
 
-(defun swap-group (&optional (group-id (current-group)))
+(defun draw-&-swap (&optional (group-id (current-group)))
+  (unless (= *last-highlight-time* 0s0)
+    (%render-highlight (%current-buffer)))
   (%render-buffers (gethash group-id *groups*))
   (swap))
 
@@ -204,15 +214,25 @@
       (list (map nil λ(%render-buffers (first _)) children))
       (buffer (%render-buffer children)))))
 
+(defun %render-highlight (buffer)
+  (let ((time (get-internal-real-time)))
+    (with-viewport (viewport buffer)
+          (cepl.misc:draw-colored-quad
+           *highlight-color* :swap nil :depth 0.8s0))
+    (when (> (- time *last-highlight-time*) *highlight-duration-ms*)
+      (setf *last-highlight-time* 0s0))))
+
 (defun %render-buffer (buffer)
-  (with-viewport (viewport buffer)
+  (with-viewport (bordered-viewport buffer)
     (with-slots (content clear-color) buffer
       (typecase content
-        (texture (cepl.misc:draw-texture content nil nil))
-        (sampler (cepl.misc:draw-texture content nil nil))
+        (texture (cepl.misc:draw-texture
+                  content :swap nil :depth 0.9s0))
+        (sampler (cepl.misc:draw-texture
+                  content :swap nil :depth 0.9s0))
         (null (when clear-color
-                (cepl.misc:draw-colored-quad clear-color nil))))))
-  (format t "rendering ~s" buffer))
+                (cepl.misc:draw-colored-quad
+                 clear-color :swap nil :depth 0.9s0)))))))
 
 ;;------------------------------------------------------------
 
@@ -274,10 +294,8 @@
     (frame
      (with-slots (%-w %-h children) frame
        (etypecase children
-         (buffer (setf (resolution children) (v! (- w *frame-size-px*)
-                                                 (- h *frame-size-px*))
-                       (origin children) (v! (+ x *frame-size-px*)
-                                             (- y h *frame-size-px*))))
+         (buffer (setf (resolution children) (v! w h)
+                       (origin children) (v! x (- y h))))
          (list (update-children frame w h x y)))))))
 
 (defun update-children (frame w h x y)
