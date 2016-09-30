@@ -205,7 +205,7 @@
 
 (defun pick-buffer (x-pix y-pix &optional (group-id *current-group*))
   (destructuring-bind (x y)
-      (cepl.internals:window-size cepl.internals:*gl-window*)
+      (cepl.internals:window-dimensions cepl.internals:*gl-window*)
     (let* ((n-x (/ x-pix x))
            (n-y (/ y-pix y)))
       (children (pick-frame-normalize-coords n-x n-y group-id)))))
@@ -313,7 +313,7 @@
 (defun update-frame-sizes ()
   (let ((win cepl.context::*gl-window*))
     (when win
-      (destructuring-bind (w h) (cepl.internals:window-size)
+      (destructuring-bind (w h) (cepl.internals:window-dimensions)
         (update-frame (gethash (current-group) *groups*) w h 0 h))))
   nil)
 
