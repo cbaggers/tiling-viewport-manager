@@ -205,7 +205,7 @@
 
 (defun pick-buffer (x-pix y-pix &optional (group-id *current-group*))
   (destructuring-bind (x y)
-      (cepl.internals:window-dimensions cepl.internals:*gl-window*)
+      (cepl.internals:window-dimensions cepl.context::*gl-window*)
     (let* ((n-x (/ x-pix x))
            (n-y (/ y-pix y)))
       (children (pick-frame-normalize-coords n-x n-y group-id)))))
