@@ -50,15 +50,20 @@
 (defstruct (hsplit (:include split)))
 
 
-;; relies on the system to populate the frame on creation
-(defstruct (tvm-root (:include frame-holder)))
+;; Relies on the system to populate the frame on creation.
+;; Type of 'dirty' is T so we can put the thing that trigger
+;; the dirty flag in there (useful for debugging)
+(defstruct (tvm-root (:include frame-holder))
+  (dirty nil :type t))
 
 (defstruct (tvm-system (:constructor %make-tvm-system))
   (root (error "Bug: tvm-system without a root") :type tvm-root)
   (targets (make-hash-table :test #'eq)
            :type hash-table)
   (draw-array (make-draw-array)
-              :type (array (or null draw-pair) (*))))
+              :type (array (or null draw-pair) (*)))
+  ;; {TODO} ugh, replace this
+  (hacky-focus nil :type t))
 
 (defstruct draw-pair
   (target (error "Bug: draw-pair without target") :type target)
@@ -69,8 +74,6 @@
 
 (declaim (type (or null tvm-system) *default-tvm-system*))
 (defvar *default-tvm-system* nil)
-
-(defvar *last-at-point* nil) ;; horrible hack, replace
 
 ;;------------------------------------------------------------
 ;; Frame
@@ -111,8 +114,9 @@
             (make-tvm-system))))
 
 
-(defun tvm-reinit (&optional (system (default-tvm-system)))
-  (let* ((root (make-tvm-root))
+(defun tvm-reinit ()
+  (let* ((system (default-tvm-system))
+         (root (make-tvm-root))
          (name :scratch)
          (target (%make-default-target name))
          (frame (make-frame target root)))
@@ -140,24 +144,29 @@
        (setf (fill-pointer arr) 0)))
   system)
 
-(defun tvm-draw (&optional (system (default-tvm-system)))
-  (let ((arr (tvm-system-draw-array system)))
+(defun tvm-draw ()
+  (let* ((system (default-tvm-system))
+         (arr (tvm-system-draw-array system)))
     (loop :for draw-pair :across arr :do
        (with-viewport (draw-pair-viewport draw-pair)
          (draw (draw-pair-target draw-pair))))))
 
-(defun tvm-layout (&optional
-                     (system (default-tvm-system))
-                     (recalc-draw-list t))
-  (let ((arr (tvm-system-draw-array system)))
-    (flet ((enqueue (x)
-             (vector-push-extend x arr)))
-      (let ((enq (when recalc-draw-list
-                   (reset-draw-array system)
-                   #'enqueue)))
-        (layout (tvm-system-root system)
-                (current-viewport)
-                enq)))))
+(defun tvm-layout (&optional (recalc-draw-list t))
+  (let* ((system (default-tvm-system))
+         (viewport (current-viewport))
+         (arr (tvm-system-draw-array system))
+         (root (tvm-system-root system)))
+    (unless (and (viewport-eql viewport (tvm-root-viewport root))
+                 (not (tvm-root-dirty root)))
+      (setf (tvm-root-dirty root) nil)
+      (flet ((enqueue (x)
+               (vector-push-extend x arr)))
+        (let ((enq (when recalc-draw-list
+                     (reset-draw-array system)
+                     #'enqueue)))
+          (layout root
+                  (copy-viewport viewport)
+                  enq))))))
 
 ;;------------------------------------------------------------
 ;; Targets
@@ -167,11 +176,13 @@
           "Target names must be symbols. Found ~s"
           name))
 
-(defun target (name &optional (system (default-tvm-system)))
-  (values (gethash name (tvm-system-targets system))))
+(defun target (name)
+  (let ((system (default-tvm-system)))
+    (values (gethash name (tvm-system-targets system)))))
 
-(defun target-names (&optional (system (default-tvm-system)))
-  (let (names)
+(defun target-names ()
+  (let* ((system (default-tvm-system))
+         names)
     (maphash
      (lambda (k v)
        (declare (ignore v))
@@ -179,12 +190,13 @@
      (tvm-system-targets system))
     names))
 
-(defun register-target (target &optional (system (default-tvm-system)))
+(defun register-target (target)
   (check-type target target)
   (assert (name target) ()
           "Cannot use a target without a name: ~a"
           target)
-  (let ((existing (target (name target) system)))
+  (let* ((system (default-tvm-system))
+         (existing (target (name target))))
     (unless (eq existing target)
       (assert (not existing) ()
               "Target named '~a' already exists in system. Cannot add ~a"
@@ -294,8 +306,9 @@
                         (split-child-frame split-child))))))
 
 ;; {TODO} base on system
-(defun frame-at-point (pos2 &optional (system (default-tvm-system)))
-  (let* ((viewport (current-viewport))
+(defun frame-at-point (pos2)
+  (let* ((system (default-tvm-system))
+         (viewport (current-viewport))
          (ox (viewport-origin-x viewport))
          (oy (viewport-origin-y viewport))
          (pos2 (vec2 (clamp ox
@@ -306,22 +319,31 @@
                             (aref pos2 1)))))
     (%frame-at-point pos2 viewport (tvm-system-root system))))
 
-(defun focus-frame-at-point (pos2 &optional (system (default-tvm-system)))
-  (let* ((frame (frame-at-point pos2 system))
-         (changed (not (eq frame *last-at-point*))))
-    (setf *last-at-point* frame)
+(defun focus-frame-at-point (pos2)
+  (let* ((system (default-tvm-system))
+         (frame (frame-at-point pos2))
+         (changed (not (eq frame (tvm-system-hacky-focus system)))))
+    (setf (tvm-system-hacky-focus system) frame)
     (values frame changed)))
 
 ;;------------------------------------------------------------
 
-(defun switch-to-target (target &optional (frame *last-at-point*))
-  (check-type frame frame)
-  (check-type target target)
-  (let ((child (frame-child frame)))
-    (assert (typep child 'target) ()
-            "Cannot switch frame to hold ~a as it holds the split ~a"
-            target child)
-    (setf (frame-child frame) target)))
+(defun switch-to-target (target)
+  (check-type target (or symbol target))
+  (let* ((system (default-tvm-system))
+         (frame (tvm-system-hacky-focus system)))
+    (check-type frame frame)
+    (let ((child (frame-child frame))
+          (target (if (symbolp target)
+                      (let ((obj (target target)))
+                        (assert obj () "No target named ~s" target)
+                        obj)
+                      target)))
+      (assert (typep child 'target) ()
+              "Cannot switch frame to hold ~a as it holds the split ~a"
+              target child)
+      (setf (tvm-root-dirty (tvm-system-root system)) target)
+      (setf (frame-child frame) target))))
 
 ;;------------------------------------------------------------
 
@@ -379,19 +401,29 @@
 (defun %split (frame predicate)
   (check-type frame frame)
   (assert (or (eq predicate #'vsplit-p) (eq predicate #'hsplit-p)))
-  (let* ((split (find-compatible-split (frame-parent frame) predicate))
-         (new-frame (if split
-                        (split-exisiting frame split)
-                        (fresh-split frame predicate))))
-    (when (eq frame *last-at-point*)
-      (setf *last-at-point* new-frame)))
-  frame)
+  (let* ((split (find-compatible-split (frame-parent frame) predicate)))
+    ;; returns the new frame
+    (if split
+        (split-exisiting frame split)
+        (fresh-split frame predicate))))
 
-(defun split-vertically (&optional (frame *last-at-point*))
-  (%split frame #'vsplit-p))
+(defun split-vertically (&optional frame)
+  (let* ((system (default-tvm-system))
+         (frame (or frame (tvm-system-hacky-focus system)))
+         (new-frame (%split frame #'vsplit-p)))
+    (setf (tvm-root-dirty (tvm-system-root system)) frame)
+    (when (eq frame (tvm-system-hacky-focus system))
+      (setf (tvm-system-hacky-focus system) new-frame))
+    frame))
 
-(defun split-horizontally (&optional (frame *last-at-point*))
-  (%split frame #'hsplit-p))
+(defun split-horizontally (&optional frame)
+  (let* ((system (default-tvm-system))
+         (frame (or frame (tvm-system-hacky-focus system)))
+         (new-frame (%split frame #'hsplit-p)))
+    (setf (tvm-root-dirty (tvm-system-root system)) frame)
+    (when (eq frame (tvm-system-hacky-focus system))
+      (setf (tvm-system-hacky-focus system) new-frame))
+    frame))
 
 ;;------------------------------------------------------------
 
@@ -424,12 +456,15 @@
           (split-child-frame (elt (split-children split)
                                   (max 0 (1- child-pos))))))))
 
-(defun pop-frame (frame)
-  (check-type frame frame)
-  (let ((split (find-compatible-split (frame-parent frame) #'split-p)))
-    (if split
-        (%remove-frame split frame)
-        (warn "Cannot pop this frame as it is the only one."))))
+(defun pop-frame (&optional frame)
+  (let* ((system (default-tvm-system))
+         (frame (or frame (tvm-system-hacky-focus system))))
+    (check-type frame frame)
+    (setf (tvm-root-dirty (tvm-system-root system)) frame)
+    (let ((split (find-compatible-split (frame-parent frame) #'split-p)))
+      (if split
+          (%remove-frame split frame)
+          (warn "Cannot pop this frame as it is the only one.")))))
 
 ;;------------------------------------------------------------
 ;; Layout
@@ -437,6 +472,7 @@
 (defgeneric layout (thing new-viewport enqueue))
 
 (defmethod layout ((this tvm-root) new-viewport enqueue)
+  (setf (tvm-root-viewport this) new-viewport)
   (layout (tvm-root-frame this) new-viewport enqueue))
 
 (defmethod layout ((this frame) new-viewport enqueue)
@@ -487,6 +523,11 @@
 
 ;;------------------------------------------------------------
 ;; Color Target
+;;
+;; This is more complicated that a regular target as it is the
+;; default target kind and has %make-default-target to bootstrap
+;; the system.
+
 
 (defclass color-target (target)
   ((color :initarg :color :accessor color)))
@@ -510,9 +551,9 @@
                                 (length cols)))))
      :name name)))
 
-(defun make-color-target (&key name color (system (default-tvm-system)))
+(defun make-color-target (&key name color)
   (check-type color (or null vec3))
-  (register-target (%make-color-target name color) system))
+  (register-target (%make-color-target name color)))
 
 (defun %make-default-target (name)
   (%make-color-target name (vec3 0.03 0.03 0.05)))
@@ -521,5 +562,120 @@
   (with-slots (color) this
     (map-g #'color-target-pipeline (nineveh:get-quad-stream-v2)
            :color3 color)))
+
+;;------------------------------------------------------------
+;; FBO Target
+
+(defclass fbo-target (target)
+  ((fbo :initarg :fbo :reader target-fbo)
+   (attachment :initarg :attachment :reader target-attachment)
+   (sampler :initform nil)))
+
+(defun make-fbo-target (name fbo attachment
+                        &key (lod-bias 0.0) (min-lod -1000.0) (max-lod 1000.0)
+                          (minify-filter :linear-mipmap-linear)
+                          (magnify-filter :linear)
+                          (wrap #(:repeat :repeat :repeat)) (compare :none))
+  (let ((target (make-instance 'fbo-target :name name)))
+    (register-target
+     (change-fbo
+      target
+      fbo
+      attachment
+      :lod-bias lod-bias
+      :min-lod min-lod
+      :max-lod max-lod
+      :minify-filter minify-filter
+      :magnify-filter magnify-filter
+      :wrap wrap
+      :compare compare))))
+
+(defun change-fbo (target fbo attachment
+                   &key (lod-bias 0.0) (min-lod -1000.0) (max-lod 1000.0)
+                     (minify-filter :linear-mipmap-linear)
+                     (magnify-filter :linear)
+                     (wrap #(:repeat :repeat :repeat)) (compare :none))
+  (check-type target fbo-target)
+  (check-type fbo fbo)
+  (let* ((old-sampler (slot-value target 'sampler))
+         (tex (attachment-tex fbo attachment))
+         (sampler (sample tex
+                          :lod-bias lod-bias
+                          :min-lod min-lod
+                          :max-lod max-lod
+                          :minify-filter minify-filter
+                          :magnify-filter magnify-filter
+                          :wrap wrap
+                          :compare compare)))
+    (setf (slot-value target 'sampler) sampler)
+    (setf (slot-value target 'fbo) fbo)
+    (setf (slot-value target 'attachment) attachment)
+    (when old-sampler
+      (free old-sampler))
+    target))
+
+(defun update-sample-params (target
+                             &key (lod-bias 0.0) (min-lod -1000.0)
+                               (max-lod 1000.0)
+                               (minify-filter :linear-mipmap-linear)
+                               (magnify-filter :linear)
+                               (wrap #(:repeat :repeat :repeat))
+                               (compare :none))
+  (let* ((old-sampler (slot-value target 'sampler))
+         (tex (attachment-tex (slot-value target 'fbo)
+                              (slot-value target 'attachment)))
+         (sampler (sample tex
+                          :lod-bias lod-bias
+                          :min-lod min-lod
+                          :max-lod max-lod
+                          :minify-filter minify-filter
+                          :magnify-filter magnify-filter
+                          :wrap wrap
+                          :compare compare)))
+    (setf (slot-value target 'sampler) sampler)
+    (when old-sampler
+      (free old-sampler))
+    target))
+
+(defpipeline-g fbo-target-pipeline ()
+  (lambda-g ((vert :vec2))
+    (values
+     (vec4 vert 0 1)
+     (+ (vec2 0.5) (* vert 0.5))))
+  (lambda-g ((uv :vec2) &uniform (sam :sampler-2d))
+    (texture sam uv)))
+
+(defmethod draw ((this fbo-target))
+  (with-slots (sampler) this
+    (map-g #'fbo-target-pipeline (nineveh:get-quad-stream-v2)
+           :sam sampler)))
+
+;;------------------------------------------------------------
+
+(defclass tvm-owned-fbo-target (fbo-target)
+  ((viewport :initform nil)))
+
+;; {TODO} support custom args in the future. This tricky bit is
+;;        on resize
+(defun make-tvm-owned-fbo-target (name)
+  (let* ((fbo (make-fbo 0 :d))
+         (inst (make-instance 'tvm-owned-fbo-target
+                              :name name)))
+    (register-target
+     (change-fbo inst fbo 0))))
+
+(defmethod draw ((this tvm-owned-fbo-target))
+  (with-slots (viewport) this
+    (let ((vp (current-viewport)))
+      (unless (and vp viewport (viewport-eql vp viewport))
+        (recreate-owned-fbo this vp))
+      (call-next-method))))
+
+(defun recreate-owned-fbo (target new-viewport)
+  (check-type new-viewport viewport)
+  (with-slots (viewport) target
+    (setf viewport new-viewport)
+    (with-viewport new-viewport
+      (change-fbo target (make-fbo 0 :d) 0))))
 
 ;;------------------------------------------------------------
