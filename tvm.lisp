@@ -329,7 +329,6 @@
                           (or null split))
                 find-compatible-split))
 (defun find-compatible-split (thing predicate)
-  (print thing)
   (cond
     ((funcall predicate thing) thing)
     ((split-child-p thing)
