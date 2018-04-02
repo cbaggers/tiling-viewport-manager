@@ -634,6 +634,7 @@
                           :compare compare)))
     (setf (slot-value target 'sampler) sampler)
     (when old-sampler
+      (free (sampler-texture old-sampler))
       (free old-sampler))
     target))
 
@@ -667,8 +668,20 @@
 (defmethod draw ((this tvm-owned-fbo-target))
   (with-slots (viewport) this
     (let ((vp (current-viewport)))
-      (unless (and vp viewport (viewport-eql vp viewport))
-        (recreate-owned-fbo this vp))
+      ;; This fails as if it is in two different frames then
+      ;; it will keep getting new viewports and thus keep recreating itself
+      ;; this is balls so we need to be able to keep some per frame state.
+      ;;
+      ;; Maybe the target name is passed in with draw so you can cache
+      ;; details based on that. When would you free them though? You
+      ;; would need 'attach' & 'detach' notifications.
+      ;;
+      ;; Or we could let you register a type to use as frame-state. It is
+      ;; created when attached and 'free' is called on it when done. This
+      ;; is similar to the above but I think is a little nicer.
+      ;;
+      ;; (unless (and vp viewport (viewport-eql vp viewport))
+      ;;   (recreate-owned-fbo this vp))
       (call-next-method))))
 
 (defun recreate-owned-fbo (target new-viewport)
